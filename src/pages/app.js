@@ -5,7 +5,9 @@ import SparkMd5 from "spark-md5";
 import "./app.scss";
 import "antd/dist/antd.css";
 export default function App() {
-  const [calcTime1, setCalcTime1] = useState(null);
+  const [time, setTime] = useState(null);
+  const [timeByWorker, setTimeByWorker] = useState(null);
+  const worker = new Worker("/readFileAsBuffer.js");
   const calculateHash = (file, chunkSize) =>
     new Promise((resolve, reject) => {
       let blobSlice =
@@ -42,15 +44,57 @@ export default function App() {
 
       loadNext();
     });
+
+  const calculateHashByWorker = (file, chunkSize) =>
+    new Promise((resolve, reject) => {
+      let blobSlice =
+          File.prototype.slice ||
+          File.prototype.mozSlice ||
+          File.prototype.webkitSlice,
+        chunks = Math.ceil(file.size / chunkSize),
+        currentChunk = 0,
+        spark = new SparkMd5.ArrayBuffer(),
+        fileReader = new FileReader();
+
+      fileReader.onload = function (e) {
+        worker.postMessage(
+          {
+            operation: "sendArrayBuffer",
+            input: e.target.result,
+            threshold: 0.8,
+            finish: true,
+          },
+          [e.target.result]
+        );
+      };
+
+      fileReader.onerror = function (e) {
+        reject(e);
+      };
+      fileReader.readAsArrayBuffer(blobSlice.call(file, 0, file.size));
+      worker.onmessage = function (e) {
+        console.log("收到", e.data);
+        resolve(e.data);
+      };
+    });
   const onChange = (info) => {
     console.log("onChange", info);
   };
   const beforeUpload = async (file) => {
-    setCalcTime1(null);
+    setTime(null);
     const start = performance.now();
     const hash = await calculateHash(file, 1024 * 1024);
     const end = performance.now();
-    setCalcTime1((end - start) / 1000);
+    setTime((end - start) / 1000);
+    console.log("file", file, hash, `cost ${(end - start) / 1000}s`);
+    return Promise.reject();
+  };
+  const beforeUploadByWorker = async (file) => {
+    setTimeByWorker(null);
+    const start = performance.now();
+    const hash = await calculateHashByWorker(file, 1024 * 1024);
+    const end = performance.now();
+    setTimeByWorker((end - start) / 1000);
     console.log("file", file, hash, `cost ${(end - start) / 1000}s`);
     return Promise.reject();
   };
@@ -60,7 +104,11 @@ export default function App() {
       <h1>欢迎！</h1>
       <Upload beforeUpload={beforeUpload} onChange={onChange}>
         <Button> Click to Upload</Button>
-        {calcTime1 && `calc hash cost ${calcTime1} s`}
+        {time && `calc hash cost ${time} s`}
+      </Upload>
+      <Upload beforeUpload={beforeUploadByWorker} onChange={onChange}>
+        <Button> Click to Upload</Button>
+        {time && `calc hash cost ${timeByWorker} s`}
       </Upload>
       <Link to="/login">去登陆</Link>
       <br />
