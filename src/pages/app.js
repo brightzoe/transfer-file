@@ -1,85 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { Upload, Button } from "antd";
-import SparkMd5 from "spark-md5";
+import axios from "axios";
+import { saveAs } from "file-saver";
+import { calculateHash, calculateHashByWorker } from "../utils/upload";
+import { downloadFileByA, downloadFileByBlob, getBinaryContent, asyncPool, saveByBlob } from "../utils/download";
 import "./app.scss";
 import "antd/dist/antd.css";
 export default function App() {
   const [time, setTime] = useState(null);
   const [timeByWorker, setTimeByWorker] = useState(null);
   const worker = new Worker("/readFileAsBuffer.js");
-  const calculateHash = (file, chunkSize) =>
-    new Promise((resolve, reject) => {
-      let blobSlice =
-          File.prototype.slice ||
-          File.prototype.mozSlice ||
-          File.prototype.webkitSlice,
-        chunks = Math.ceil(file.size / chunkSize),
-        currentChunk = 0,
-        spark = new SparkMd5.ArrayBuffer(),
-        fileReader = new FileReader();
 
-      fileReader.onload = function (e) {
-        spark.append(e.target.result); // Append array buffer
-        console.log("current chunk index", currentChunk);
-        currentChunk++;
-        if (currentChunk < chunks) {
-          loadNext();
-        } else {
-          let fileHash = spark.end(); //compute hash
-          resolve(fileHash);
-        }
-      };
-
-      fileReader.onerror = function (e) {
-        reject(e);
-      };
-
-      function loadNext() {
-        const start = currentChunk * chunkSize,
-          end = start + chunkSize >= file.size ? file.size : start + chunkSize;
-
-        fileReader.readAsArrayBuffer(blobSlice.call(file, start, end));
-      }
-
-      loadNext();
-    });
-
-  const calculateHashByWorker = (file, chunkSize) =>
-    new Promise((resolve, reject) => {
-      let blobSlice =
-          File.prototype.slice ||
-          File.prototype.mozSlice ||
-          File.prototype.webkitSlice,
-        chunks = Math.ceil(file.size / chunkSize),
-        currentChunk = 0,
-        spark = new SparkMd5.ArrayBuffer(),
-        fileReader = new FileReader();
-
-      fileReader.onload = function (e) {
-        worker.postMessage(
-          {
-            operation: "sendArrayBuffer",
-            input: e.target.result,
-            threshold: 0.8,
-            finish: true,
-          },
-          [e.target.result]
-        );
-      };
-
-      fileReader.onerror = function (e) {
-        reject(e);
-      };
-      fileReader.readAsArrayBuffer(blobSlice.call(file, 0, file.size));
-      worker.onmessage = function (e) {
-        console.log("收到", e.data);
-        resolve(e.data);
-      };
-    });
   const onChange = (info) => {
     console.log("onChange", info);
   };
+
   const beforeUpload = async (file) => {
     setTime(null);
     const start = performance.now();
@@ -89,30 +24,64 @@ export default function App() {
     console.log("file", file, hash, `cost ${(end - start) / 1000}s`);
     return Promise.reject();
   };
+
   const beforeUploadByWorker = async (file) => {
     setTimeByWorker(null);
     const start = performance.now();
-    const hash = await calculateHashByWorker(file, 1024 * 1024);
+    const hash = await calculateHashByWorker(file, 1024 * 1024, worker);
     const end = performance.now();
     setTimeByWorker((end - start) / 1000);
     console.log("file", file, hash, `cost ${(end - start) / 1000}s`);
     return Promise.reject();
   };
 
+  const download1 = () => {
+    // 无法重命名
+    downloadFileByA("http://localhost:8080/down/video.flv", "aa.flv");
+  };
+  const download2 = () => {
+    downloadFileByBlob("down/reader.mp4", "aa.mp4");
+  };
+
+  const SIZE = 20 * 1024 * 1024; //设置切片的大小
+  const CONTENT_LENGTH = 794359202; //从接口获取文件大小
+
+  const download3 = async () => {
+    let chunks = Math.ceil(CONTENT_LENGTH / SIZE);
+    let chunksArray = [...new Array(chunks).keys()];
+    console.log("arr", chunksArray);
+    let results = await asyncPool(3, chunksArray, (i) => {
+      let start = i * SIZE;
+      let end = i + 1 === chunks ? CONTENT_LENGTH : (i + 1) * SIZE - 1;
+      return getBinaryContent(`down/reader.mp4`, start, end, i);
+    });
+    results.sort((a, b) => a.index - b.index);
+    let arr = results.map((r) => r.data?.data);
+    console.log("arr", arr);
+    const blob = new Blob(arr, { type: "application/octet-stream" });
+    saveByBlob("mp4.mp4", blob);
+  };
+  const download4 = async () => {
+    downloadFileByA("http://localhost:8080/down/video.flv/cust.flv", "cust.flv");
+  };
+  const download5 = () => {
+    saveAs("http://localhost:8080/down/video.flv", "abc.flv");
+  };
   return (
     <div className="container">
-      <h1>欢迎！</h1>
       <Upload beforeUpload={beforeUpload} onChange={onChange}>
-        <Button> Click to Upload</Button>
+        <Button> calc hash</Button>
         {time && `calc hash cost ${time} s`}
       </Upload>
       <Upload beforeUpload={beforeUploadByWorker} onChange={onChange}>
-        <Button> Click to Upload</Button>
-        {time && `calc hash cost ${timeByWorker} s`}
+        <Button> calc hash by Worker</Button>
+        {timeByWorker && `calc hash cost ${timeByWorker} s`}
       </Upload>
-      <Link to="/login">去登陆</Link>
-      <br />
-      <Link to="/home">去首页</Link>
+      <Button onClick={download1}>download by a</Button>
+      <Button onClick={download2}>download by blob</Button>
+      <Button onClick={download3}>download by partial blob</Button>
+      <Button onClick={download4}>download by pass filename</Button>
+      <Button onClick={download5}>download by file saver</Button>
     </div>
   );
 }
